@@ -3,12 +3,99 @@ import { PlusCircle, TrendingUp, Target, Calendar, BarChart3 } from 'lucide-reac
 
 /**
  * ChessTracker with Insight Engine
- * - Uses localStorage for persistence (works in any regular browser app)
+ * - Uses IndexedDB for persistence (better performance, larger storage)
  * - Fixed delete/save/load logic
  * - Insight engine produces human-friendly recommendations
  */
 
-const STORAGE_KEY = 'chess-games';
+const DB_NAME = 'chessTrackerDB';
+const STORE_NAME = 'games';
+const DB_VERSION = 1;
+
+let db = null;
+
+// Initialize IndexedDB
+const initDB = () => {
+  return new Promise((resolve, reject) => {
+    if (db) {
+      resolve(db);
+      return;
+    }
+
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onerror = () => {
+      console.error('Database failed to open');
+      reject(request.error);
+    };
+
+    request.onsuccess = () => {
+      db = request.result;
+      resolve(db);
+    };
+
+    request.onupgradeneeded = (event) => {
+      const newDB = event.target.result;
+      if (!newDB.objectStoreNames.contains(STORE_NAME)) {
+        newDB.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+  });
+};
+
+// Load games from IndexedDB
+const loadGamesFromStorage = async () => {
+  try {
+    await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.getAll();
+
+      request.onsuccess = () => {
+        resolve(Array.isArray(request.result) ? request.result : []);
+      };
+
+      request.onerror = () => {
+        console.error('Failed to load games from IndexedDB');
+        reject(request.error);
+      };
+    });
+  } catch (err) {
+    console.error('Error loading games:', err);
+    return [];
+  }
+};
+
+// Save games to IndexedDB
+const saveGamesToStorage = async (updatedGames) => {
+  try {
+    await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+
+      // Clear existing data
+      store.clear();
+
+      // Add all games
+      updatedGames.forEach((game) => {
+        store.add(game);
+      });
+
+      transaction.oncomplete = () => {
+        resolve();
+      };
+
+      transaction.onerror = () => {
+        console.error('Failed to save games to IndexedDB');
+        reject(transaction.error);
+      };
+    });
+  } catch (err) {
+    console.error('Error saving games:', err);
+  }
+};
 
 const ChessTracker = () => {
   const [games, setGames] = useState([]);
@@ -34,41 +121,24 @@ const ChessTracker = () => {
     note: ''
   });
 
-  /* ----------------------------- STORAGE HELPERS (localStorage) ----------------------------- */
-
-  const loadGamesFromStorage = () => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      // Ensure array shape
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const saveGamesToStorage = (updatedGames) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedGames));
-    } catch (err) {
-      console.error('Failed to save games to storage', err);
-    }
-  };
+  /* ----------------------------- STORAGE HELPERS (IndexedDB) ----------------------------- */
 
   useEffect(() => {
-    const stored = loadGamesFromStorage();
-    setGames(stored);
+    const loadGames = async () => {
+      const stored = await loadGamesFromStorage();
+      setGames(stored);
+    };
+    loadGames();
   }, []);
 
   /* ----------------------------- CRUD: Games & Mistakes ----------------------------- */
 
-  const saveGames = (updatedGames) => {
+  const saveGames = async (updatedGames) => {
     setGames(updatedGames);
-    saveGamesToStorage(updatedGames);
+    await saveGamesToStorage(updatedGames);
   };
 
-  const handleAddGame = () => {
+  const handleAddGame = async () => {
     if (!gameForm.opponentRating || !gameForm.opening) {
       alert('Please fill in all required fields');
       return;
@@ -78,7 +148,7 @@ const ChessTracker = () => {
       const updatedGames = games.map(g =>
         g.id === editingGame.id ? { ...g, ...gameForm } : g
       );
-      saveGames(updatedGames);
+      await saveGames(updatedGames);
       setEditingGame(null);
       setCurrentView('dashboard');
       resetGameForm();
@@ -91,7 +161,7 @@ const ChessTracker = () => {
       mistakes: []
     };
     const updatedGames = [...games, newGame];
-    saveGames(updatedGames);
+    await saveGames(updatedGames);
     setCurrentGame(newGame);
     setCurrentView('addMistake');
     resetGameForm();
@@ -112,17 +182,17 @@ const ChessTracker = () => {
     setCurrentView('addGame');
   };
 
-  const handleDeleteGame = (gameId) => {
+  const handleDeleteGame = async (gameId) => {
     if (!window.confirm('Are you sure you want to delete this game?')) return;
     const updatedGames = games.filter(g => g.id !== gameId);
-    saveGames(updatedGames);
+    await saveGames(updatedGames);
     if (currentGame?.id === gameId) {
       setCurrentGame(null);
       setCurrentView('dashboard');
     }
   };
 
-  const handleAddMistake = () => {
+  const handleAddMistake = async () => {
     if (!currentGame) return; // safety
     const updatedGames = games.map(game =>
       game.id === currentGame.id
@@ -132,7 +202,7 @@ const ChessTracker = () => {
           }
         : game
     );
-    saveGames(updatedGames);
+    await saveGames(updatedGames);
     setCurrentGame(updatedGames.find(g => g.id === currentGame.id));
     resetMistakeForm();
   };
